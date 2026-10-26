@@ -9,7 +9,15 @@ export async function searchWeb(query: string): Promise<Source[]> {
       "Content-Type": "application/json",
       Authorization: `Bearer ${process.env.TAVILY_API_KEY}`,
     },
-    body: JSON.stringify({ query, max_results: 5, search_depth: "basic" }),
+    body: JSON.stringify({
+      query,
+      max_results: 6,
+      search_depth: "basic",
+      exclude_domains: [
+        "instagram.com", "facebook.com", "tiktok.com", "x.com",
+        "twitter.com", "reddit.com", "pinterest.com", "youtube.com",
+      ],
+    }),
   });
   if (!res.ok) {
     throw new Error(`Tavily error ${res.status}: ${await res.text()}`);

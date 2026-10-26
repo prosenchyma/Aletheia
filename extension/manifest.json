@@ -1,0 +1,11 @@
+{
+  "manifest_version": 3,
+  "name": "aletheia",
+  "version": "0.1.0",
+  "description": "Select text and check how true, balanced and biased it is.",
+  "permissions": ["sidePanel", "contextMenus", "storage"],
+  "host_permissions": ["http://localhost:3000/*"],
+  "background": { "service_worker": "background.js" },
+  "side_panel": { "default_path": "sidepanel.html" },
+  "action": { "default_title": "TruthCheck" }
+}
