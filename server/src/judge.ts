@@ -14,6 +14,7 @@ export type Judgment = {
   claim: Claim;
   verdict: Verdict;
   explanation: string;
+  consensus: string;
   evidence: { url: string; quote: string }[];
   sources: Source[];
 };
@@ -31,6 +32,7 @@ const SYSTEM = `You are a careful fact-checker. You receive ONE claim and severa
 Judge the claim ONLY from the sources provided. Do not use your own memory of the facts.
 Return ONLY JSON in this shape:
 {"verdict":"supported"|"mostly_supported"|"mixed"|"mostly_contradicted"|"contradicted"|"insufficient",
+ "consensus":"consensus"|"disputed"|"minority_view"|"unknown",
  "explanation":"1-2 sentences",
  "evidence":[{"url":"...","quote":"..."}]}
 
@@ -41,6 +43,8 @@ Verdict meanings:
 - mostly_contradicted: sources mostly show the claim is wrong.
 - contradicted: sources clearly show the claim is false.
 - insufficient: the sources do not contain enough information. Use this rather than guessing.
+
+consensus: do the reliable sources broadly agree (consensus), disagree with each other (disputed), or is the claim a view held by few experts (minority_view)?
 
 Rules for evidence: each quote must be copied exactly from the source text and be under 25 words.
 Give at most 2 evidence items. Prefer reliable sources (research, government, encyclopedias, established media).
@@ -61,6 +65,7 @@ export async function judgeClaim(claim: Claim): Promise<Judgment> {
     claim,
     verdict: result.verdict,
     explanation: result.explanation,
+    consensus: result.consensus ?? "unknown",
     evidence: result.evidence ?? [],
     sources,
   };
