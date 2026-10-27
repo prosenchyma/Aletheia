@@ -38,3 +38,4 @@ h2 { font-size: 15px; margin: 20px 0 8px; }
 .sev1 { color: #e0a800; }
 .sev2 { color: #e07a00; }
 .sev3 { color: #d64545; }
+.quote { max-height: 7.5em; overflow-y: auto; white-space: pre-wrap; }

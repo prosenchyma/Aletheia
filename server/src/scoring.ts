@@ -65,11 +65,10 @@ export function computeScores(input: {
   confidence *= 0.8 + 0.2 * (analysis?.agreement ?? 1);
 
   const parts = [
-    { s: truthfulness, w: 0.4 },
-    { s: consistency, w: 0.2 },
-    { s: nuance, w: 0.15 },
-    { s: framing, w: 0.15 },
-    { s: risk, w: 0.1 },
+    { s: truthfulness, w: 0.45 },
+    { s: nuance, w: 0.2 },
+    { s: framing, w: 0.2 },
+    { s: risk, w: 0.15 },
   ].filter((p) => p.s !== null) as { s: number; w: number }[];
 
   let overall: number | null = null;
@@ -78,6 +77,9 @@ export function computeScores(input: {
     const totalW = parts.reduce((a, p) => a + p.w, 0);
     const raw = parts.reduce((a, p) => a + p.s * p.w, 0) / totalW;
     overall = 50 + (raw - 50) * confidence;
+    // Penalty only below 80, so normal noise does nothing
+    const penalty = consistency === null ? 0 : Math.max(0, 80 - consistency) * 0.4;
+    overall = Math.max(0, overall - penalty);
     if (truthfulness !== null && truthfulness < 30) overall = Math.min(overall, 40);
   }
   if (coverage !== null && coverage < 0.25) {

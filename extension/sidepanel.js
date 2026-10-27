@@ -30,7 +30,8 @@ const pretty = (s) => String(s).replace(/_/g, " ");
 function gauge(name, value) {
   const row = el("div", "gauge");
   const head = el("div", "gauge-head");
-  head.append(el("span", "", name), el("span", "gauge-val", value === null ? "n/a" : String(value)));
+  const word = value === null ? "" : value >= 70 ? " (good)" : value >= 40 ? " (mixed)" : " (poor)";
+  head.append(el("span", "", name), el("span", "gauge-val", value === null ? "n/a" : value + word));
   const track = el("div", "bar");
   const fill = el("div", "fill " + (value === null ? "neutral" : band(value)));
   fill.style.width = (value === null ? 0 : value) + "%";
@@ -42,7 +43,7 @@ function gauge(name, value) {
 async function run(text, pageUrl) {
   root.replaceChildren(
     el("p", "status", "Checking claims and analyzing the writing... about 10-20 seconds."),
-    el("blockquote", "quote", text.slice(0, 300))
+    el("blockquote", "quote", text)
   );
   try {
     const res = await fetch(API, {
@@ -61,7 +62,7 @@ async function run(text, pageUrl) {
 function render(text, data) {
   const s = data.scores;
   root.replaceChildren();
-  root.append(el("blockquote", "quote", text.slice(0, 300)));
+  root.append(el("blockquote", "quote", text));
 
   // Overall score
   const box = el("div", "score");
@@ -89,7 +90,7 @@ function render(text, data) {
     gauge("Truthfulness", s.truthfulness),
     gauge("Nuance", s.nuance),
     gauge("Framing", s.framing),
-    gauge("Consistency", s.consistency),
+    gauge("Consistency (can only lower the score)", s.consistency),
     gauge("Manipulation safety", s.risk)
   );
   root.append(g);
