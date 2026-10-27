@@ -1,13 +1,6 @@
-import { Finding, Meta, Category } from "./analysis";
+import { AnalysisResult, Category } from "./analysis";
 import { Judgment, truthfulnessScore } from "./judge";
 import { domainTrust } from "./trust";
-
-// Some criteria hurt more than others
-const MULT: Record<string, number> = {
-  logical_contradiction: 2,
-  numbers_dont_add_up: 2,
-  conclusion_vs_data: 1.5,
-};
 
 const GROUPS: Record<"nuance" | "framing" | "consistency" | "risk", Category[]> = {
   nuance: ["nuance", "logic"],
@@ -16,18 +9,20 @@ const GROUPS: Record<"nuance" | "framing" | "consistency" | "risk", Category[]> 
   risk: ["manipulation"],
 };
 
-
-
-
-
-// 0 findings -> 100. More and more severe findings -> lower, never below 0.
-function penaltyScore(findings: Finding[], words: number, cats: Category[]): number {
-  const sum = findings
-    .filter((f) => cats.includes(f.category))
-    .reduce((a, f) => a + f.severity * (MULT[f.criterion] ?? 1), 0);
-  const density = sum / (Math.max(words, 60) / 100);
-  return Math.round(100 * Math.exp(-density / 5));
+// Average rating 0-4 -> score 0-100. No problems = 100.
+function toScore(rating: number): number {
+  return Math.max(0, 100 - 22.5 * rating);
 }
+
+// When two categories share a gauge, the worse one counts more
+function groupScore(ratings: Record<string, number>, cats: Category[]): number {
+  const v = cats.map((c) => ratings[c] ?? 0).sort((a, b) => b - a);
+  const eff = v.length === 1 ? v[0] : 0.6 * v[0] + 0.4 * v[1];
+  return toScore(eff);
+}
+
+const round5 = (n: number | null): number | null =>
+  n === null ? null : Math.round(n / 5) * 5;
 
 export type Scores = {
   overall: number | null;
@@ -36,7 +31,7 @@ export type Scores = {
   framing: number | null;
   consistency: number | null;
   risk: number | null; // higher = safer
-  confidence: number; // 0 to 1
+  confidence: number;
   confidenceLabel: "high" | "medium" | "low";
   coverage: number | null;
   note: string | null;
@@ -46,21 +41,19 @@ export function computeScores(input: {
   text: string;
   judgments: Judgment[];
   factCount: number;
-  analysis: { findings: Finding[]; meta: Meta } | null;
+  analysis: AnalysisResult | null;
 }): Scores {
   const { text, judgments, factCount, analysis } = input;
   const words = text.split(/\s+/).filter(Boolean).length;
 
   const truthfulness = truthfulnessScore(judgments);
+  const gs = (g: keyof typeof GROUPS) =>
+    analysis ? groupScore(analysis.ratings, GROUPS[g]) : null;
+  const nuance = gs("nuance");
+  const framing = gs("framing");
+  const consistency = gs("consistency");
+  const risk = gs("risk");
 
-  const pen = (g: keyof typeof GROUPS) =>
-    analysis ? penaltyScore(analysis.findings, words, GROUPS[g]) : null;
-  const nuance = pen("nuance");
-  const framing = pen("framing");
-  const consistency = pen("consistency");
-  const risk = pen("risk");
-
-  // Confidence: how much of the text could we actually check, and with what sources?
   const checked = judgments.filter((j) => j.verdict !== "insufficient").length;
   const coverage = factCount === 0 ? null : checked / factCount;
   const urls = judgments.flatMap((j) => j.evidence.map((e) => e.url));
@@ -69,9 +62,8 @@ export function computeScores(input: {
     : 0.5;
   let confidence = coverage === null ? 0.6 : 0.6 * coverage + 0.4 * sourceQuality;
   if (words < 40) confidence *= 0.7;
-        confidence *= 0.8 + 0.2 * ((analysis as any)?.agreement ?? 1);
+  confidence *= 0.8 + 0.2 * (analysis?.agreement ?? 1);
 
-  // Overall: weighted average of the gauges we have, shrunk toward 50 when unsure
   const parts = [
     { s: truthfulness, w: 0.4 },
     { s: consistency, w: 0.2 },
@@ -85,7 +77,7 @@ export function computeScores(input: {
   if (parts.length > 0) {
     const totalW = parts.reduce((a, p) => a + p.w, 0);
     const raw = parts.reduce((a, p) => a + p.s * p.w, 0) / totalW;
-    overall = Math.round(50 + (raw - 50) * confidence);
+    overall = 50 + (raw - 50) * confidence;
     if (truthfulness !== null && truthfulness < 30) overall = Math.min(overall, 40);
   }
   if (coverage !== null && coverage < 0.25) {
@@ -97,15 +89,22 @@ export function computeScores(input: {
     note = "Mostly opinion. Treat the factual score with care.";
   }
   if (analysis?.meta.contested_topic) {
-    note = (note ? note + " " : "") +
+    note =
+      (note ? note + " " : "") +
       "Contested topic: reasonable people disagree on values here, so read the perspectives rather than relying on the score.";
   }
 
   const confidenceLabel = confidence >= 0.75 ? "high" : confidence >= 0.5 ? "medium" : "low";
-
   return {
-    overall, truthfulness, nuance, framing, consistency, risk,
+    overall: round5(overall),
+    truthfulness: round5(truthfulness),
+    nuance: round5(nuance),
+    framing: round5(framing),
+    consistency: round5(consistency),
+    risk: round5(risk),
     confidence: Math.round(confidence * 100) / 100,
-    confidenceLabel, coverage, note,
+    confidenceLabel,
+    coverage,
+    note,
   };
 }

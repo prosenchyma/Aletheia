@@ -52,13 +52,9 @@ export type Meta = {
 export type AnalysisResult = {
   findings: Finding[];
   meta: Meta;
-  ratings: Record<string, number>;
-  agreement: number; // 0 to 1: how much the 3 runs agreed
+  ratings: Record<Category, number>; // average over runs, 0 to 4
+  agreement: number; // 0 to 1: how much the runs agreed
 };
-
-const ALL: { category: Category; criterion: string }[] = CATEGORIES.flatMap((c) =>
-  RUBRIC[c].map((criterion) => ({ category: c, criterion }))
-);
 
 const ABSENCE = new Set([
   "omission", "missing_caveats", "no_counter_perspective",
@@ -67,34 +63,54 @@ const ABSENCE = new Set([
 
 const CRITERIA_LIST = CATEGORIES.map((c) => `- ${c}: ${RUBRIC[c].join(", ")}`).join("\n");
 
-const SYSTEM = `You analyze HOW a text is written: its nuance, logic, framing, emotional language, internal consistency and manipulation signals. You do NOT judge whether facts are true; another system does that.
+const SYSTEM = `You analyze HOW a text is written, not whether its facts are true (another system checks the facts).
 
-Rate EVERY criterion below on this scale:
-0 = not present
+STEP 1. Rate each of the 6 categories from 0 to 4 for how much PROBLEMATIC writing the text shows:
+0 = none: the text is clean in this respect
 1 = mild: one minor instance
-2 = clear: a noticeable instance, or several minor ones
-3 = severe: repeated, or central to the message of the text
+2 = moderate: one clear instance, or a few minor ones
+3 = strong: several clear instances, or one that is central to the message
+4 = extreme: it dominates the text, present in almost every sentence
 
-Criteria by category:
+Categories and what they cover:
 ${CRITERIA_LIST}
 
+Calibration examples (different from the text you will analyze):
+A) "The unemployment rate fell to 6.1% in March, according to the national statistics agency. Economists caution that the figure may be revised and that it excludes people who have stopped looking for work."
+   -> nuance 0, logic 0, framing 0, emotion 0, consistency 0, manipulation 0
+B) "The government's DISASTROUS new tax will destroy every family in this country. Only a fool would support it. Wake up before it is too late!"
+   -> nuance 4, logic 2, framing 3, emotion 4, consistency 0, manipulation 2
+C) "A leaked memo proves the mayor secretly takes orders from foreign agents. The mainstream media will never report this, so do your own research and ignore the so-called experts."
+   -> nuance 2, logic 3, framing 2, emotion 1, consistency 0, manipulation 4
+
+STEP 2. List up to 8 specific findings: the most important problems, each tied to one criterion from the lists above.
+
 Return ONLY JSON in this shape:
-{"ratings":{"absolutism":0,"oversimplification":0,"...":0},
- "details":[{"criterion":"absolutism","quote":"...","explanation":"..."}],
+{"ratings":{"nuance":0,"logic":0,"framing":0,"emotion":0,"consistency":0,"manipulation":0},
+ "findings":[{"category":"nuance","criterion":"absolutism","severity":2,"quote":"...","explanation":"..."}],
  "meta":{"text_type":"news"|"opinion"|"social_post"|"scientific"|"other","opinion_share":0.0,"contested_topic":false,"dominant_emotion":"fear"|"anger"|"disgust"|"pride"|"pity"|"hope"|"none","overall_intent":"inform"|"persuade"|"manipulate"}}
 
 Rules:
-1. "ratings" must contain EVERY criterion listed above, each an integer from 0 to 3. Rate each criterion independently.
-2. "details" must contain one entry for every criterion rated 1 or higher, and no others.
-3. quote: ONE continuous passage copied exactly from the text, at most 15 words, no ellipses. It may be an empty string only for: omission, missing_caveats, no_counter_perspective, one_sided_voices, missing_context_numbers.
-4. explanation: one short sentence.
-5. Be calibrated and consistent. A neutral, balanced, well-sourced text must get 0 on everything. Rate only what is clearly visible in the text; do not speculate about intentions.
-6. A text under 40 words cannot show omissions or missing caveats. Rate those 0 unless clearly relevant.
+1. Rate each category on the whole text, independently, using the anchors and examples. Be consistent: the same text must get the same ratings every time.
+2. A neutral, balanced, well-sourced text gets 0 everywhere. Rate only what is visible in the text. Do not speculate about hidden intentions.
+3. A category rated 1 or more needs at least one finding. A category rated 0 has none.
+4. severity: 1 = mild, 2 = clear, 3 = severe.
+5. quote: ONE continuous passage copied exactly from the text, at most 15 words, no ellipses. It may be empty only for: omission, missing_caveats, no_counter_perspective, one_sided_voices, missing_context_numbers.
+6. explanation: one short sentence.
 7. contested_topic is true only if reasonable people disagree on values (politics, religion, ethics), not for settled facts.
-8. Inside strings never use double quote characters (use single quotes) and never use line breaks.`;
+8. For texts under 40 words, do not rate omissions or missing caveats.
+9. Inside strings never use double quote characters (use single quotes) and never use line breaks.`;
 
 function norm(s: string): string {
   return s.toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, " ").replace(/\s+/g, " ").trim();
+}
+
+// Lenient check: most of the quote's words must appear in the text
+function quoteInText(quote: string, haystackWords: Set<string>): boolean {
+  const w = norm(quote).split(" ").filter(Boolean);
+  if (w.length < 2) return false;
+  const hit = w.filter((x) => haystackWords.has(x)).length;
+  return hit / w.length >= 0.8;
 }
 
 function mode(values: string[]): string {
@@ -103,35 +119,35 @@ function mode(values: string[]): string {
   return [...counts.entries()].sort((a, b) => b[1] - a[1])[0][0];
 }
 
-function median(v: number[]): number {
-  const s = [...v].sort((a, b) => a - b);
-  return s[Math.floor((s.length - 1) / 2)];
-}
-
-type Run = {
-  ratings: Record<string, { r: number; quote: string; why: string }>;
-  meta: Meta;
-};
+type Run = { ratings: Record<Category, number>; findings: Finding[]; meta: Meta };
 
 async function runOnce(text: string, seed: number): Promise<Run> {
-  const result = await askJson(SYSTEM, `TEXT:\n${text}`, { temperature: 0.3, seed });
-  const haystack = norm(text);
+  const result = await askJson(SYSTEM, `TEXT:\n${text}`, { temperature: 0.2, seed });
 
-  const detail = new Map<string, any>();
-  for (const d of Array.isArray(result.details) ? result.details : []) {
-    detail.set(String(d.criterion), d);
+  // Every category must be present, otherwise this run is thrown away
+  const ratings = {} as Record<Category, number>;
+  for (const c of CATEGORIES) {
+    const v = Number(result.ratings?.[c]);
+    if (!Number.isFinite(v)) throw new Error(`Run is missing a rating for ${c}`);
+    ratings[c] = Math.min(4, Math.max(0, Math.round(v)));
   }
+  console.log("  [analysis] ratings:", JSON.stringify(ratings));
 
-  const out: Run["ratings"] = {};
-  for (const { criterion } of ALL) {
-    let r = Math.min(3, Math.max(0, Math.round(Number(result.ratings?.[criterion]) || 0)));
-    const d = detail.get(criterion);
-    const quote = String(d?.quote ?? "");
-    const why = String(d?.explanation ?? "");
-    const nq = norm(quote);
-    // A problem without a real quote from the text does not count
-    if (r > 0 && !ABSENCE.has(criterion) && !(nq.length > 0 && haystack.includes(nq))) r = 0;
-    out[criterion] = { r, quote, why };
+  const words = new Set(norm(text).split(" ").filter(Boolean));
+  const findings: Finding[] = [];
+  for (const f of Array.isArray(result.findings) ? result.findings : []) {
+    const category = f.category as Category;
+    const criterion = String(f.criterion ?? "");
+    if (!CATEGORIES.includes(category)) continue;
+    if (!(RUBRIC[category] as readonly string[]).includes(criterion)) continue;
+    const quote = String(f.quote ?? "");
+    if (!ABSENCE.has(criterion) && !quoteInText(quote, words)) continue;
+    findings.push({
+      category, criterion,
+      severity: Math.min(3, Math.max(1, Math.round(Number(f.severity) || 1))) as 1 | 2 | 3,
+      quote,
+      explanation: String(f.explanation ?? ""),
+    });
   }
 
   const m = result.meta ?? {};
@@ -142,39 +158,54 @@ async function runOnce(text: string, seed: number): Promise<Run> {
     dominant_emotion: String(m.dominant_emotion ?? "none"),
     overall_intent: String(m.overall_intent ?? "inform"),
   };
-  return { ratings: out, meta };
+  return { ratings, findings, meta };
 }
 
-export async function analyzeTextVoted(text: string, runs = 3): Promise<AnalysisResult> {
+export async function analyzeTextVoted(text: string, runs = 5): Promise<AnalysisResult> {
   const settled = await Promise.allSettled(
     Array.from({ length: runs }, (_, i) => runOnce(text, 101 + i * 17))
   );
-  const ok = settled.flatMap((s) => (s.status === "fulfilled" ? [s.value] : []));
+  const ok = settled.flatMap((s) => {
+    if (s.status === "fulfilled") return [s.value];
+    console.warn("  [analysis] run discarded:", s.reason?.message);
+    return [];
+  });
   if (ok.length === 0) throw new Error("All analysis runs failed");
 
-  const ratings: Record<string, number> = {};
-  const findings: Finding[] = [];
-  let spreadSum = 0;
-  let active = 0;
+  const trimmedMean = (v: number[]) => {
+    const s = [...v].sort((a, b) => a - b);
+    const t = s.length >= 5 ? s.slice(1, -1) : s;
+    return t.reduce((a, b) => a + b, 0) / t.length;
+  };
+  const ratings = {} as Record<Category, number>;
+  let spread = 0;
+  for (const c of CATEGORIES) {
+    const v = ok.map((r) => r.ratings[c]);
+    ratings[c] = trimmedMean(v);
+    spread += Math.max(...v) - Math.min(...v);
+  }
+  const agreement = 1 - spread / (CATEGORIES.length * 4);
 
-  for (const { category, criterion } of ALL) {
-    const cells = ok.map((r) => r.ratings[criterion]);
-    const vals = cells.map((c) => c.r);
-    const med = median(vals);
-    ratings[criterion] = med;
-    if (Math.max(...vals) > 0) {
-      active++;
-      spreadSum += Math.max(...vals) - Math.min(...vals);
-    }
-    if (med > 0) {
-      const src = cells.find((c) => c.r === med) ?? cells.find((c) => c.r > 0)!;
-      findings.push({
-        category, criterion,
-        severity: med as 1 | 2 | 3,
-        quote: src.quote, explanation: src.why,
-      });
+  const byCrit = new Map<string, { f: Finding; runs: number }>();
+  for (const r of ok) {
+    const seen = new Set<string>();
+    for (const f of r.findings) {
+      if (seen.has(f.criterion)) continue;
+      seen.add(f.criterion);
+      const cur = byCrit.get(f.criterion);
+      if (!cur) byCrit.set(f.criterion, { f, runs: 1 });
+      else {
+        cur.runs++;
+        if (f.severity > cur.f.severity) cur.f = f;
+      }
     }
   }
+  const need = ok.length >= 3 ? Math.ceil(ok.length / 2) : 1;
+  const findings = [...byCrit.values()]
+    .filter((x) => (x.runs >= need || x.f.severity === 3) && ratings[x.f.category] >= 0.5)
+    .map((x) => x.f)
+    .sort((a, b) => b.severity - a.severity)
+    .slice(0, 8);
 
   const metas = ok.map((r) => r.meta);
   const meta: Meta = {
@@ -186,6 +217,5 @@ export async function analyzeTextVoted(text: string, runs = 3): Promise<Analysis
     overall_intent: mode(metas.map((m) => m.overall_intent)),
   };
 
-  const agreement = active === 0 ? 1 : 1 - spreadSum / (3 * active);
   return { findings, meta, ratings, agreement };
 }

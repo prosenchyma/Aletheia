@@ -43,7 +43,7 @@ app.post("/analyze", async (req, res) => {
       const facts = claims
         .filter((c) => c.type === "fact")
         .sort((a, b) => claimWeight(b) - claimWeight(a))
-        .slice(0, 8);
+        .slice(0, 6);
       const settled = await Promise.allSettled(
         facts.map((c) => judgeClaim(c, { text, excludeDomains }))
       );
