@@ -25,23 +25,28 @@ function parseJson(text: string): any {
   }
 }
 
-export async function askJson(system: string, user: string): Promise<any> {
+export async function askJson(
+  system: string,
+  user: string,
+  opts: { temperature?: number; seed?: number } = {}
+): Promise<any> {
   let lastError: unknown;
   for (let attempt = 1; attempt <= 3; attempt++) {
     try {
-        const t0 = Date.now();
-        const res = await client.chat.completions.create({
+      const t0 = Date.now();
+      const res = await client.chat.completions.create({
         model: MODEL_STRONG,
-        temperature: 0.1,
+        temperature: opts.temperature ?? 0,
+        seed: opts.seed ?? 42,
         messages: [
           { role: "system", content: system },
           { role: "user", content: user },
         ],
       });
-      console.log(`  [LLM] ${MODEL_STRONG} | ${((Date.now() - t0) / 1000).toFixed(1)} s | output tokens: ${res.usage?.completion_tokens}`
+      console.log(
+        `  [LLM] ${((Date.now() - t0) / 1000).toFixed(1)} s | output tokens: ${res.usage?.completion_tokens}`
       );
-      const text = res.choices[0].message.content ?? "";
-      return parseJson(text);
+      return parseJson(res.choices[0].message.content ?? "");
     } catch (err) {
       lastError = err;
       console.warn(`  (attempt ${attempt} failed, retrying...)`);

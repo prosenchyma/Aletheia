@@ -39,7 +39,7 @@ function gauge(name, value) {
   return row;
 }
 
-async function run(text) {
+async function run(text, pageUrl) {
   root.replaceChildren(
     el("p", "status", "Checking claims and analyzing the writing... about 10-20 seconds."),
     el("blockquote", "quote", text.slice(0, 300))
@@ -48,7 +48,7 @@ async function run(text) {
     const res = await fetch(API, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text }),
+      body: JSON.stringify({ text, pageUrl }),
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || "HTTP " + res.status);
@@ -100,13 +100,16 @@ function render(text, data) {
     const [label, cls] = VERDICTS[j.verdict] ?? ["Unknown", "neutral"];
     const card = el("div", "card");
     card.append(el("div", "claim", j.claim.text));
+    if (j.claim.kind === "attribution") card.append(el("span", "badge neutral", "Did they say it?"));
+    if (j.claim.kind === "embedded") card.append(el("span", "badge neutral", "Quoted statement, checked on its own"));
+    if (j.ignored > 0) card.append(el("p", "status small", j.ignored + " source(s) ignored: same site as the text or copies of it"));
     card.append(el("span", "badge " + cls, label));
     if (j.consensus === "disputed" || j.consensus === "minority_view") {
       card.append(el("span", "badge warn", pretty(j.consensus)));
     }
     card.append(el("p", "why", j.explanation));
     for (const ev of j.evidence) {
-      const p = el("p", "ev", "\u201C" + ev.quote + "\u201D ");
+      const p = el("p", "ev", (ev.stance ? ev.stance.toUpperCase() + ": " : "") + "\u201C" + ev.quote + "\u201D ");
       if (/^https?:\/\//.test(ev.url)) {
         const a = el("a", "", ev.url);
         a.href = ev.url;
@@ -143,10 +146,10 @@ function render(text, data) {
 }
 
 chrome.storage.session.get("pending").then(({ pending }) => {
-  if (pending && Date.now() - pending.ts < 15000) run(pending.text);
+  if (pending && Date.now() - pending.ts < 15000) run(pending.text, pending.pageUrl);
 });
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area === "session" && changes.pending?.newValue) {
-    run(changes.pending.newValue.text);
+    run(changes.pending.newValue.text, changes.pending.newValue.pageUrl);
   }
 });

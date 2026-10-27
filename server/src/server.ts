@@ -1,10 +1,21 @@
 import "dotenv/config";
 import express from "express";
 import cors from "cors";
+import crypto from "crypto";
+import fs from "fs";
 import { extractClaims } from "./extract";
-import { judgeClaim } from "./judge";
-import { analyzeText } from "./analysis";
+import { judgeClaim, claimWeight } from "./judge";
+import { analyzeTextVoted } from "./analysis";
 import { computeScores } from "./scoring";
+import { hostOf } from "./tavily";
+
+const CACHE_FILE = "cache.json";
+let cache: Record<string, any> = {};
+try {
+  if (fs.existsSync(CACHE_FILE)) cache = JSON.parse(fs.readFileSync(CACHE_FILE, "utf8"));
+} catch {
+  cache = {};
+}
 
 const app = express();
 app.use(cors());
@@ -15,19 +26,36 @@ app.post("/analyze", async (req, res) => {
   if (text.length < 20) return res.status(400).json({ error: "Text too short" });
   if (text.length > 5000) return res.status(400).json({ error: "Text too long" });
 
+  // Sources from the same site as the text must not be used to confirm it
+  const pageHost = hostOf(String(req.body?.pageUrl ?? ""));
+  const textHosts = (text.match(/https?:\/\/[^\s)]+/g) ?? []).map((u) => hostOf(u));
+  const excludeDomains = [...new Set([pageHost, ...textHosts].filter((h): h is string => !!h))];
+
+  const key = crypto
+    .createHash("sha256")
+    .update(text.toLowerCase().replace(/\s+/g, " ") + "|" + (pageHost ?? ""))
+    .digest("hex");
+  if (!req.body?.fresh && cache[key]) return res.json({ ...cache[key], cached: true });
+
   try {
-    // Part A: extract claims, search, judge. Part B: analyze the writing. Both at once.
     const factPipeline = (async () => {
       const claims = await extractClaims(text);
-      const facts = claims.filter((c) => c.type === "fact").slice(0, 8);
-      const settled = await Promise.allSettled(facts.map(judgeClaim));
-      const judgments = settled.flatMap((s) =>
-        s.status === "fulfilled" ? [s.value] : []
+      const facts = claims
+        .filter((c) => c.type === "fact")
+        .sort((a, b) => claimWeight(b) - claimWeight(a))
+        .slice(0, 8);
+      const settled = await Promise.allSettled(
+        facts.map((c) => judgeClaim(c, { text, excludeDomains }))
       );
+      const judgments = settled.flatMap((s) => {
+        if (s.status === "fulfilled") return [s.value];
+        console.error("Judge failed:", s.reason?.message);
+        return [];
+      });
       return { claims, facts, judgments };
     })();
 
-    const analysisPipeline = analyzeText(text).catch((err) => {
+    const analysisPipeline = analyzeTextVoted(text).catch((err) => {
       console.error("Analysis failed:", err.message);
       return null;
     });
@@ -41,7 +69,7 @@ app.post("/analyze", async (req, res) => {
       analysis,
     });
 
-    res.json({
+    const payload = {
       claims: fp.claims,
       judgments: fp.judgments.map((j) => ({
         ...j,
@@ -51,7 +79,11 @@ app.post("/analyze", async (req, res) => {
       findings: analysis?.findings ?? [],
       meta: analysis?.meta ?? null,
       scores,
-    });
+      excludedDomains: excludeDomains,
+    };
+    cache[key] = payload;
+    fs.writeFileSync(CACHE_FILE, JSON.stringify(cache));
+    res.json(payload);
   } catch (err: any) {
     console.error(err);
     res.status(500).json({ error: err.message });

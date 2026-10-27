@@ -1,5 +1,6 @@
 import { Finding, Meta, Category } from "./analysis";
 import { Judgment, truthfulnessScore } from "./judge";
+import { domainTrust } from "./trust";
 
 // Some criteria hurt more than others
 const MULT: Record<string, number> = {
@@ -15,20 +16,9 @@ const GROUPS: Record<"nuance" | "framing" | "consistency" | "risk", Category[]> 
   risk: ["manipulation"],
 };
 
-const TRUSTED = [
-  ".gov", ".edu", "who.int", "nasa.gov", "nih.gov", "cdc.gov", "britannica.com",
-  "wikipedia.org", "reuters.com", "apnews.com", "bbc.co.uk", "bbc.com",
-  "nature.com", "science.org", "ourworldindata.org", "scb.se",
-];
 
-function domainTrust(url: string): number {
-  try {
-    const host = new URL(url).hostname.toLowerCase();
-    return TRUSTED.some((t) => host.includes(t.replace(/^\./, "")) ) ? 1 : 0.5;
-  } catch {
-    return 0.5;
-  }
-}
+
+
 
 // 0 findings -> 100. More and more severe findings -> lower, never below 0.
 function penaltyScore(findings: Finding[], words: number, cats: Category[]): number {
@@ -79,6 +69,7 @@ export function computeScores(input: {
     : 0.5;
   let confidence = coverage === null ? 0.6 : 0.6 * coverage + 0.4 * sourceQuality;
   if (words < 40) confidence *= 0.7;
+        confidence *= 0.8 + 0.2 * ((analysis as any)?.agreement ?? 1);
 
   // Overall: weighted average of the gauges we have, shrunk toward 50 when unsure
   const parts = [
