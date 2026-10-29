@@ -3,3 +3,4 @@ dist
 .env
 cache.json
 search-cache.json
+sample.txt

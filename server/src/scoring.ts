@@ -9,12 +9,10 @@ const GROUPS: Record<"nuance" | "framing" | "consistency" | "risk", Category[]> 
   risk: ["manipulation"],
 };
 
-// Average rating 0-4 -> score 0-100. No problems = 100.
 function toScore(rating: number): number {
   return Math.max(0, 100 - 22.5 * rating);
 }
 
-// When two categories share a gauge, the worse one counts more
 function groupScore(ratings: Record<string, number>, cats: Category[]): number {
   const v = cats.map((c) => ratings[c] ?? 0).sort((a, b) => b - a);
   const eff = v.length === 1 ? v[0] : 0.6 * v[0] + 0.4 * v[1];
@@ -30,7 +28,7 @@ export type Scores = {
   nuance: number | null;
   framing: number | null;
   consistency: number | null;
-  risk: number | null; // higher = safer
+  risk: number | null;
   confidence: number;
   confidenceLabel: "high" | "medium" | "low";
   coverage: number | null;
@@ -54,7 +52,9 @@ export function computeScores(input: {
   const consistency = gs("consistency");
   const risk = gs("risk");
 
-  const checked = judgments.filter((j) => j.verdict !== "insufficient").length;
+  const checked = judgments.filter(
+    (j) => j.verdict !== "insufficient" && j.verdict !== "unsupported"
+  ).length;
   const coverage = factCount === 0 ? null : checked / factCount;
   const urls = judgments.flatMap((j) => j.evidence.map((e) => e.url));
   const sourceQuality = urls.length
@@ -77,14 +77,20 @@ export function computeScores(input: {
     const totalW = parts.reduce((a, p) => a + p.w, 0);
     const raw = parts.reduce((a, p) => a + p.s * p.w, 0) / totalW;
     overall = 50 + (raw - 50) * confidence;
-    // Penalty only below 80, so normal noise does nothing
     const penalty = consistency === null ? 0 : Math.max(0, 80 - consistency) * 0.4;
     overall = Math.max(0, overall - penalty);
     if (truthfulness !== null && truthfulness < 30) overall = Math.min(overall, 40);
   }
-  if (coverage !== null && coverage < 0.25) {
-    overall = null;
-    note = "Insufficient evidence found to give an overall score.";
+  if (truthfulness === null && factCount > 0) {
+    note = "No factual claims could be verified, so the overall score reflects the writing only.";
+  } else if (coverage !== null && coverage < 0.25) {
+    note = `Only ${checked} of ${factCount} factual claims could be verified, so treat the scores with caution.`;
+  } else if (
+    truthfulness === null &&
+    judgments.length > 0 &&
+    judgments.every((j) => j.claim.kind === "attribution" || j.verdict === "insufficient")
+  ) {
+    note = "Only whether the quotes were really said could be checked. The statements themselves had no independent sources.";
   } else if (factCount === 0) {
     note = "No checkable factual claims found. Factual score not applicable.";
   } else if (analysis && analysis.meta.opinion_share > 0.7) {

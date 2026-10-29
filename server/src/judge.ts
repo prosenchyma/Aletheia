@@ -3,12 +3,16 @@ import { searchWeb, hostOf, Source } from "./tavily";
 import { Claim } from "./extract";
 import { domainTrust } from "./trust";
 
+const STANCE_RUNS = Number(process.env.STANCE_RUNS ?? 1);
+
 export type Verdict =
   | "supported"
   | "mostly_supported"
   | "mixed"
   | "mostly_contradicted"
   | "contradicted"
+  | "unsupported"
+  | "unsupported_absolute"
   | "insufficient";
 
 export type Evidence = { url: string; quote: string; stance: string };
@@ -20,21 +24,25 @@ export type Judgment = {
   explanation: string;
   evidence: Evidence[];
   sources: Source[];
-  ignored: number; // sources thrown away as same-origin or copies
+  ignored: number;
 };
 
+// "unsupported" (no evidence either way) is not scored.
+// "unsupported_absolute" (flat superlative with no backing) scores low.
 export const POINTS: Record<Verdict, number | null> = {
   supported: 100,
   mostly_supported: 80,
   mixed: 50,
   mostly_contradicted: 20,
   contradicted: 0,
+  unsupported: null,
+  unsupported_absolute: 10,
   insufficient: null,
 };
 
-// Attributions only prove someone said something, so they count little.
 export function claimWeight(c: Claim): number {
   if (c.kind === "attribution") return 2;
+  if (c.absolute) return Math.min(c.centrality, 2);
   if (c.kind === "embedded") return 2;
   return c.centrality;
 }
@@ -56,9 +64,13 @@ Rules:
 3. Be strict. If unsure between "supports" and something weaker, choose the weaker one.
 4. quote: exact words copied from the source (max 25 words) that justify your stance. Empty string for repeats, neutral and irrelevant.
 5. consensus: "consensus" if reliable sources broadly agree, "disputed" if they disagree, "minority_view" if few experts hold the claim, else "unknown".
+6. Sources may be in a different language than the claim. Judge the meaning, not the wording.
+7. For claims about what something is (a definition, a method, a book, a tool, a person's work), a reliable source that describes it the same way supports the claim, even if the wording is different.
+8. For absolute or superlative claims (nobody, never, always, the best ever, better than anyone), "supports" requires a reliable source that explicitly establishes it, such as records, rankings or official data. A source that merely mentions the claim, praises the person, or repeats it is "repeats", not "supports".
 
 Return ONLY JSON:
-{"consensus":"...","explanation":"1-2 sentences describing what the independent sources show. Do not state a verdict.","sources":[{"i":1,"stance":"...","quote":"..."}]}
+{"consensus":"...","explanation":"1-2 sentences describing what the independent sources show. Do not state a verdict.","sources":[{"i":1,"reason":"max 15 words: what this source says about the claim","stance":"...","quote":"..."}]}
+Write the reason first, then choose the stance that follows from it. Every source must appear exactly once.
 Inside strings never use double quote characters (use single quotes) and never use line breaks.`;
 
 function norm(s: string): string {
@@ -88,7 +100,6 @@ function verdictFromStances(items: { stance: string; trust: number }[]): Verdict
     } else if (it.stance === "partial") p += it.trust;
     else if (it.stance === "contradicts") c += it.trust;
   }
-  // A narrower confirmation leans against the claim as stated
   const support = s + 0.25 * p;
   const against = c + 0.75 * p;
   const total = support + against;
@@ -108,18 +119,38 @@ function majority(votes: string[], fallback: string): string {
   const counts = new Map<string, number>();
   for (const v of votes) counts.set(v, (counts.get(v) ?? 0) + 1);
   const [best, n] = [...counts.entries()].sort((a, b) => b[1] - a[1])[0];
-  // If the runs disagree with each other, give no credit either way
   return n >= 2 || votes.length === 1 ? best : fallback;
+}
+
+// What to say when the sources give no usable answer
+function noEvidenceVerdict(claim: Claim): Verdict {
+  if (claim.kind === "attribution") return "insufficient";
+  if (claim.absolute) return "unsupported_absolute";
+  return "unsupported";
+}
+
+function explain(verdict: Verdict, fromModel: string): string {
+  if (verdict === "unsupported_absolute") {
+    return "This is stated as a flat fact, but it is an absolute or superlative claim and no reliable source explicitly supports it. If it is only the author's view, it should be framed as one.";
+  }
+  if (verdict === "unsupported") {
+    return "No independent source was found either way. This does not mean the claim is false; it could not be verified.";
+  }
+  return fromModel;
 }
 
 export async function judgeClaim(
   claim: Claim,
   ctx: { text: string; excludeDomains: string[] }
 ): Promise<Judgment> {
-  const found = await searchWeb(
-    [claim.text, `${claim.text} fact check evidence`],
-    ctx.excludeDomains
-  );
+  const queries = [
+    ...new Set(
+      [claim.query, claim.query_en].filter((x): x is string => !!x && x.length > 5)
+    ),
+  ];
+  if (queries.length === 0) queries.push(claim.text);
+  if (queries.length === 1) queries.push(`${queries[0]} fact check`);
+  const found = await searchWeb(queries, ctx.excludeDomains);
 
   // Throw away sources from the same page/site, and copies of the input text
   const checkEcho = claim.kind !== "attribution" && wordCount(ctx.text) >= 40;
@@ -137,27 +168,31 @@ export async function judgeClaim(
   });
   const sources = usable
     .sort((a, b) => domainTrust(b.url) - domainTrust(a.url))
-    .slice(0, 8);
+    .slice(0, 6);
 
   if (sources.length === 0) {
+    const v = noEvidenceVerdict(claim);
     return {
-      claim, verdict: "insufficient", consensus: "unknown",
-      explanation: "No independent sources were found.",
+      claim, verdict: v, consensus: "unknown",
+      explanation: explain(v, ""),
       evidence: [], sources: [], ignored,
     };
   }
 
   const sourceText = sources
-    .map((s, i) => `[${i + 1}] ${s.title}\nURL: ${s.url}\n${s.content.slice(0, 1500)}`)
+    .map((s, i) => `[${i + 1}] ${s.title}\nURL: ${s.url}\n${s.content.slice(0, 1000)}`)
     .join("\n\n");
   const userMsg = `CLAIM: ${claim.text}\nCLAIM KIND: ${claim.kind}${
     claim.speaker ? ` (statement by ${claim.speaker})` : ""
   }\n\nSOURCES:\n${sourceText}`;
 
-  // Classify the sources 3 times and let the runs vote
   const settled = await Promise.allSettled(
-    Array.from({ length: 3 }, (_, k) =>
-      askJson(SYSTEM, userMsg, { temperature: 0.3, seed: 7 + k * 31 })
+    Array.from({ length: STANCE_RUNS }, (_, k) =>
+      askJson(SYSTEM, userMsg, {
+        temperature: STANCE_RUNS > 1 ? 0.3 : 0,
+        seed: 7 + k * 31,
+        think: true,
+      })
     )
   );
   const results = settled.flatMap((s) => (s.status === "fulfilled" ? [s.value] : []));
@@ -175,11 +210,11 @@ export async function judgeClaim(
     return { src, stance, quote };
   });
 
-  const verdict = verdictFromStances(
+  const raw = verdictFromStances(
     items.map((i) => ({ stance: i.stance, trust: domainTrust(i.src.url) }))
   );
+  const verdict: Verdict = raw === "insufficient" ? noEvidenceVerdict(claim) : raw;
 
-  // Keep only quotes that really appear in the source
   const evidence: Evidence[] = items
     .filter(
       (i) =>
@@ -193,11 +228,12 @@ export async function judgeClaim(
   console.log(
     `  [judge] ${claim.text.slice(0, 50)} -> ${verdict} | stances: ${items.map((i) => i.stance).join(", ")}`
   );
+  console.log("  [sources]", sources.map((s) => s.title.slice(0, 45)).join(" | "));
 
   return {
     claim, verdict,
     consensus: majority(results.map((r) => String(r.consensus ?? "unknown")), "unknown"),
-    explanation: String(results[0].explanation ?? ""),
+    explanation: explain(verdict, String(results[0].explanation ?? "")),
     evidence, sources, ignored,
   };
 }
@@ -208,6 +244,7 @@ export function truthfulnessScore(judgments: Judgment[]): number | null {
   for (const j of judgments) {
     const points = POINTS[j.verdict];
     if (points === null || points === undefined) continue;
+    // A confirmed "did they say it" claim proves little, so it is not counted
     if (j.claim.kind === "attribution" && points >= 50) continue;
     const w = claimWeight(j.claim);
     weighted += w * points;

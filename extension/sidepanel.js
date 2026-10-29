@@ -7,6 +7,8 @@ const VERDICTS = {
   mixed: ["Mixed / missing context", "warn"],
   mostly_contradicted: ["Mostly contradicted", "bad"],
   contradicted: ["Contradicted", "bad"],
+  unsupported: ["Not verified (no evidence either way)", "neutral"],
+  unsupported_absolute: ["Unsupported absolute claim", "bad"],
   insufficient: ["Not enough evidence", "neutral"],
 };
 const CATEGORY_LABELS = {
@@ -64,7 +66,6 @@ function render(text, data) {
   root.replaceChildren();
   root.append(el("blockquote", "quote", text));
 
-  // Overall score
   const box = el("div", "score");
   box.append(
     el("div", "num", s.overall === null ? "N/A" : s.overall + " / 100"),
@@ -73,7 +74,6 @@ function render(text, data) {
   root.append(box);
   if (s.note) root.append(el("p", "note", s.note));
 
-  // Chips
   if (data.meta) {
     const chips = el("div", "chips");
     chips.append(
@@ -84,7 +84,6 @@ function render(text, data) {
     root.append(chips);
   }
 
-  // Gauges
   const g = el("div", "gauges");
   g.append(
     gauge("Truthfulness", s.truthfulness),
@@ -95,7 +94,6 @@ function render(text, data) {
   );
   root.append(g);
 
-  // Claims
   if (data.judgments.length) root.append(el("h2", "", "Fact checks"));
   for (const j of data.judgments) {
     const [label, cls] = VERDICTS[j.verdict] ?? ["Unknown", "neutral"];
@@ -126,7 +124,6 @@ function render(text, data) {
     root.append(el("p", "status", data.failed + " claim(s) could not be checked."));
   }
 
-  // Findings about the writing
   if (data.findings.length) root.append(el("h2", "", "How it is written"));
   const sorted = [...data.findings].sort((a, b) => b.severity - a.severity);
   for (const f of sorted) {

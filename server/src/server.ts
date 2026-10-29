@@ -22,11 +22,13 @@ app.use(cors());
 app.use(express.json({ limit: "100kb" }));
 
 app.post("/analyze", async (req, res) => {
+  const t0 = Date.now();
+  const lap = (label: string) =>
+  console.log(`[timing] ${label}: ${((Date.now() - t0) / 1000).toFixed(1)} s`);
   const text = String(req.body?.text ?? "").trim();
   if (text.length < 20) return res.status(400).json({ error: "Text too short" });
   if (text.length > 5000) return res.status(400).json({ error: "Text too long" });
 
-  // Sources from the same site as the text must not be used to confirm it
   const pageHost = hostOf(String(req.body?.pageUrl ?? ""));
   const textHosts = (text.match(/https?:\/\/[^\s)]+/g) ?? []).map((u) => hostOf(u));
   const excludeDomains = [...new Set([pageHost, ...textHosts].filter((h): h is string => !!h))];
@@ -40,6 +42,7 @@ app.post("/analyze", async (req, res) => {
   try {
     const factPipeline = (async () => {
       const claims = await extractClaims(text);
+      lap("claims extracted");
       const facts = claims
         .filter((c) => c.type === "fact")
         .sort((a, b) => claimWeight(b) - claimWeight(a))
@@ -52,15 +55,25 @@ app.post("/analyze", async (req, res) => {
         console.error("Judge failed:", s.reason?.message);
         return [];
       });
+      console.log("[summary] claims:");
+      claims.forEach((c) => console.log(`   ${c.kind}/${c.type}: ${c.text}  | query: ${c.query}`));
+      console.log("[summary] verdicts:", judgments.map((j) => `${j.claim.kind}=${j.verdict}`).join(", "));
+      lap("facts judged");
       return { claims, facts, judgments };
     })();
 
-    const analysisPipeline = analyzeTextVoted(text).catch((err) => {
-      console.error("Analysis failed:", err.message);
-      return null;
-    });
+    const analysisPipeline = analyzeTextVoted(text)
+      .then((r) => {
+        lap("writing analysis done");
+        return r;
+      })
+      .catch((err) => {
+        console.error("Analysis failed:", err.message);
+        return null;
+      });
 
     const [fp, analysis] = await Promise.all([factPipeline, analysisPipeline]);
+    lap("all done");
 
     const scores = computeScores({
       text,

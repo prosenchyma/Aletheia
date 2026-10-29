@@ -11,8 +11,9 @@ export const client = new OpenAI({
 export const MODEL_STRONG =
   process.env.MODEL_NAME ?? "nvidia/nemotron-3-super-120b-a12b";
 
-// Limit how many model calls run at the same time, to avoid rate limits
-const MAX_CONCURRENT = Number(process.env.MAX_CONCURRENT ?? 10);
+const NO_THINK = process.env.NO_THINK === "1";
+
+const MAX_CONCURRENT = Number(process.env.MAX_CONCURRENT ?? 16);
 let active = 0;
 const waiting: (() => void)[] = [];
 async function acquire() {
@@ -45,7 +46,7 @@ function parseJson(text: string): any {
 export async function askJson(
   system: string,
   user: string,
-  opts: { temperature?: number; seed?: number } = {}
+  opts: { temperature?: number; seed?: number; think?: boolean } = {}
 ): Promise<any> {
   let lastError: unknown;
   for (let attempt = 1; attempt <= 3; attempt++) {
@@ -57,16 +58,19 @@ export async function askJson(
           model: MODEL_STRONG,
           temperature: opts.temperature ?? 0,
           seed: opts.seed ?? 42,
-          max_tokens: 3000,
+          max_tokens: opts.think ? 8000 : 3000,
+          ...(NO_THINK && opts.think !== true
+            ? { chat_template_kwargs: { enable_thinking: false } }
+            : {}),
           messages: [
             { role: "system", content: system },
             { role: "user", content: user },
           ],
-        },
+        } as any,
         { timeout: 90000 }
       );
       console.log(
-        `  [LLM] ${((Date.now() - t0) / 1000).toFixed(1)} s | output tokens: ${res.usage?.completion_tokens}`
+        `  [LLM${opts.think ? " think" : ""}] ${((Date.now() - t0) / 1000).toFixed(1)} s | output tokens: ${res.usage?.completion_tokens}`
       );
       return parseJson(res.choices[0].message.content ?? "");
     } catch (err: any) {

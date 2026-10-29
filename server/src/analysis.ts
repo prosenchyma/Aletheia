@@ -52,8 +52,8 @@ export type Meta = {
 export type AnalysisResult = {
   findings: Finding[];
   meta: Meta;
-  ratings: Record<Category, number>; // average over runs, 0 to 4
-  agreement: number; // 0 to 1: how much the runs agreed
+  ratings: Record<Category, number>;
+  agreement: number; 
 };
 
 const ABSENCE = new Set([
