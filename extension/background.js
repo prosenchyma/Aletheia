@@ -11,8 +11,7 @@ chrome.runtime.onInstalled.addListener(() => {
 
 chrome.contextMenus.onClicked.addListener((info, tab) => {
   if (info.menuItemId !== "Aletheia" || !tab) return;
-
-  // Must be called right away, while Chrome still counts it as a user click
+  
   chrome.sidePanel.open({ tabId: tab.id }).catch((e) => console.error("open failed", e));
 
   (async () => {
