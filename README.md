@@ -8,6 +8,7 @@ Built for the **Nebius x NVIDIA Global AI Hackathon 2026**.
 
 - **Track:** Apps & Agents
 - **Team:** Prosenchyma and Mercurry91
+- **Demo:** https://github.com/prosenchyma/Aletheia/releases/tag/v0.1.0
 
 ## How it works
 
