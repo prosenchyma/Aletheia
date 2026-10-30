@@ -21,6 +21,33 @@ const app = express();
 app.use(cors());
 app.use(express.json({ limit: "100kb" }));
 
+app.set("trust proxy", 1);
+
+const hits = new Map<string, number[]>();
+let dayStart = Date.now();
+let dayCount = 0;
+const PER_IP_PER_HOUR = Number(process.env.PER_IP_PER_HOUR ?? 20);
+const DAILY_CAP = Number(process.env.DAILY_CAP ?? 500);
+
+app.get("/health", (_req, res) => res.json({ ok: true }));
+
+app.use("/analyze", (req, res, next) => {
+  const now = Date.now();
+  if (now - dayStart > 24 * 3600 * 1000) {
+    dayStart = now;
+    dayCount = 0;
+  }
+  const ip = req.ip ?? "unknown";
+  const recent = (hits.get(ip) ?? []).filter((t) => now - t < 3600 * 1000);
+  if (recent.length >= PER_IP_PER_HOUR || dayCount >= DAILY_CAP) {
+    return res.status(429).json({ error: "Rate limit reached. Please try again later." });
+  }
+  recent.push(now);
+  hits.set(ip, recent);
+  dayCount++;
+  next();
+});
+
 app.post("/analyze", async (req, res) => {
   const t0 = Date.now();
   const lap = (label: string) =>
