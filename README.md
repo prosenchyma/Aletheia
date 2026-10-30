@@ -77,7 +77,7 @@ It listens on `http://localhost:3000`. Health check: `http://localhost:3000/heal
 
 1. Open `chrome://extensions` and turn on **Developer mode**.
 2. Click **Load unpacked** and choose the `extension` folder.
-3. On any page, select some text (at least 20 characters), right-click, and choose **Check with TruthCheck**. The side panel opens with the analysis.
+3. On any page, select some text (at least 20 characters), right-click, and choose **Check with Aletheia**. The side panel opens with the analysis.
 
 To use a deployed backend instead of localhost, change `API` at the top of `extension/sidepanel.js` and the `host_permissions` entry in `extension/manifest.json`, then reload the extension.
 
