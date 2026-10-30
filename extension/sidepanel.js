@@ -1,4 +1,4 @@
-const API = "http://localhost:3000/analyze";
+const API = "http://213.239.175.203:3000/analyze";
 const root = document.getElementById("root");
 
 const VERDICTS = {

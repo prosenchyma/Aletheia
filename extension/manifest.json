@@ -4,7 +4,7 @@
   "version": "0.1.1",
   "description": "Select text and check how true, balanced and biased it is.",
   "permissions": ["sidePanel", "contextMenus", "storage", "scripting", "activeTab"],
-  "host_permissions": ["http://localhost:3000/*"],
+  "host_permissions": ["http://213.239.175.203:3000/*"],
   "background": { "service_worker": "background.js" },
   "side_panel": { "default_path": "sidepanel.html" },
   "action": { "default_title": "Aletheia" }
